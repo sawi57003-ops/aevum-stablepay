@@ -1,9 +1,0 @@
-{
-  "network": "Aevum testnet",
-  "chainId": 44005,
-  "rpc": "https://rpc-test.qday.info",
-  "explorer": "https://explorer-test.qday.info",
-  "tUSD8": "0x456569838f1d43009A91ebA4263147Afd7233483",
-  "escrow": "0x5b73C5498c1E3b4dbA84de0F1833c4a029d90519",
-  "deployer": "0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38"
-}
