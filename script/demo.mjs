@@ -104,7 +104,7 @@ async function main() {
   const total = 3n * perOrder;
   const allowance = await token.allowance(buyer.address, escrowAddr);
   if (allowance < total) {
-    await send("approve 15 tUSD8", token.approve(escrowAddr, total));
+    await send(`approve ${fmt(total)} tUSD8`, token.approve(escrowAddr, total));
   }
 
   const deadline = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
