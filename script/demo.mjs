@@ -98,7 +98,10 @@ async function main() {
   }
 
   // One approval covers all three demo orders.
-  const total = 3n * 5n * 10n ** 6n; // 3 x 5 tUSD8
+  // Amount per order (default 5 tUSD8) — lower it if tUSD8 is scarce:
+  //   DEMO_AMOUNT=1 node script/demo.mjs
+  const perOrder = BigInt(process.env.DEMO_AMOUNT || "5") * 10n ** 6n;
+  const total = 3n * perOrder;
   const allowance = await token.allowance(buyer.address, escrowAddr);
   if (allowance < total) {
     await send("approve 15 tUSD8", token.approve(escrowAddr, total));
@@ -108,9 +111,9 @@ async function main() {
   const results = [];
 
   // ---- Payment 1: happy path -------------------------------------------
-  console.log("\n== Payment 1: happy path (5 tUSD8) ==");
+  console.log("\n== Payment 1: happy path (per-order tUSD8) ==");
   const count0 = await escrow.orderCount();
-  await send("createOrder #1", escrow.createOrder(seller.address, arbiter.address, 5n * 10n ** 6n, deadline));
+  await send("createOrder #1", escrow.createOrder(seller.address, arbiter.address, perOrder, deadline));
   const id1 = count0;
   await send("markDelivered #1", escrow.connect(seller).markDelivered(id1));
   await send("confirmDelivery #1", escrow.confirmDelivery(id1));
@@ -120,9 +123,9 @@ async function main() {
   results.push({ id: Number(id1), path: "happy", state: STATE[o1.state] });
 
   // ---- Payment 2: cancel / refund --------------------------------------
-  console.log("\n== Payment 2: cancel before delivery (5 tUSD8) ==");
+  console.log("\n== Payment 2: cancel before delivery (per-order tUSD8) ==");
   const count1 = await escrow.orderCount();
-  await send("createOrder #2", escrow.createOrder(seller.address, arbiter.address, 5n * 10n ** 6n, deadline));
+  await send("createOrder #2", escrow.createOrder(seller.address, arbiter.address, perOrder, deadline));
   const id2 = count1;
   const buyerBefore = await token.balanceOf(buyer.address);
   await send("cancelOrder #2", escrow.cancelOrder(id2));
@@ -133,9 +136,9 @@ async function main() {
   results.push({ id: Number(id2), path: "cancel", state: STATE[o2.state] });
 
   // ---- Payment 3: dispute resolved to seller ----------------------------
-  console.log("\n== Payment 3: dispute -> arbiter releases to seller (5 tUSD8) ==");
+  console.log("\n== Payment 3: dispute -> arbiter releases to seller (per-order tUSD8) ==");
   const count2 = await escrow.orderCount();
-  await send("createOrder #3", escrow.createOrder(seller.address, arbiter.address, 5n * 10n ** 6n, deadline));
+  await send("createOrder #3", escrow.createOrder(seller.address, arbiter.address, perOrder, deadline));
   const id3 = count2;
   await send("markDelivered #3", escrow.connect(seller).markDelivered(id3));
   await send("raiseDispute #3", escrow.raiseDispute(id3));
