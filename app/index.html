@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StablePay — escrowed tUSD8 payments on Aevum</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; } code { background: #f0f0f0; padding: 0 .3em; border-radius: 4px; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  label { display: block; margin: .5rem 0 .2rem; font-weight: 600; }
+  input, button { font: inherit; padding: .5rem; } input { width: 100%; box-sizing: border-box; }
+  button { cursor: pointer; margin-top: .5rem; } button:disabled { opacity: .5; cursor: default; }
+  .order { border-top: 1px solid #eee; padding: .75rem 0; }
+  .muted { color: #666; font-size: .9rem; } #log { white-space: pre-wrap; background: #111; color: #0f0; padding: 1rem; border-radius: 8px; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>StablePay — escrowed tUSD8 payments</h1>
+<p class="muted">Aevum testnet (chain 44005) · Buyer locks tUSD8 in escrow, seller marks delivery,
+buyer confirms and the seller gets paid. Disputes go to an arbiter; unfulfilled orders refund
+after the deadline. Testnet only, no real funds.</p>
+
+<div class="card">
+  <button id="connect">Connect wallet</button>
+  <span id="account" class="muted"></span>
+  <p class="muted">Escrow: <code id="escrowAddr">—</code><br>tUSD8: <code id="tokenAddr">—</code></p>
+  <p>Your tUSD8: <b id="bal">—</b> · Escrow holds: <b id="escBal">—</b></p>
+</div>
+
+<div class="card">
+  <h2>Create order</h2>
+  <label>Seller address <input id="seller" placeholder="0x…"></label>
+  <label>Arbiter address (optional, blank = none) <input id="arbiter" placeholder="0x…"></label>
+  <label>Amount (tUSD8) <input id="amount" type="number" min="0" step="0.000001" value="5"></label>
+  <label>Delivery deadline (days from now) <input id="days" type="number" min="1" value="7"></label>
+  <button id="create">Approve + create order</button>
+  <p class="muted">Two transactions: first approve the escrow to pull tUSD8, then create the order.</p>
+</div>
+
+<div class="card">
+  <h2>Orders</h2>
+  <button id="refresh">Refresh orders</button>
+  <div id="orders"><p class="muted">No orders loaded yet.</p></div>
+</div>
+
+<div class="card"><h2>Log</h2><div id="log">Ready.</div></div>
+
+<script src="config.js"></script>
+<script type="module">
+import { ethers } from "https://cdn.jsdelivr.net/npm/ethers@6.13.0/dist/ethers.min.js";
+
+const C = window.STABLEPAY_CONFIG;
+const ESCROW_ABI = [
+  "function createOrder(address seller, address arbiter, uint256 amount, uint256 deliveryDeadline) returns (uint256)",
+  "function markDelivered(uint256 orderId)", "function confirmDelivery(uint256 orderId)",
+  "function cancelOrder(uint256 orderId)", "function claimRefund(uint256 orderId)",
+  "function claimRelease(uint256 orderId)", "function raiseDispute(uint256 orderId)",
+  "function resolveDispute(uint256 orderId, bool releaseToSeller)",
+  "function getOrder(uint256 orderId) view returns (tuple(address buyer, address seller, address arbiter, uint256 amount, uint256 deliveryDeadline, uint256 deliveredAt, uint8 state))",
+  "function orderCount() view returns (uint256)",
+];
+const ERC20_ABI = [
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function balanceOf(address account) view returns (uint256)",
+];
+const STATE = ["FUNDED", "DELIVERED", "COMPLETED", "REFUNDED", "DISPUTED"];
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+const log = (m) => { logEl.textContent += "\n" + m; };
+const fmt = (v) => ethers.formatUnits(v, 6);
+
+$("escrowAddr").textContent = C.escrow;
+$("tokenAddr").textContent = C.tUSD8;
+
+let provider, signer, account, escrow, token;
+const readProvider = new ethers.JsonRpcProvider(C.rpc, C.chainId);
+
+async function refreshBalances() {
+  if (!account) return;
+  $("bal").textContent = fmt(await new ethers.Contract(C.tUSD8, ERC20_ABI, readProvider).balanceOf(account)) + " tUSD8";
+  $("escBal").textContent = fmt(await new ethers.Contract(C.tUSD8, ERC20_ABI, readProvider).balanceOf(C.escrow)) + " tUSD8";
+}
+
+async function refreshOrders() {
+  const box = $("orders"); box.innerHTML = "";
+  const readEscrow = new ethers.Contract(C.escrow, ESCROW_ABI, readProvider);
+  const n = Number(await readEscrow.orderCount());
+  if (!n) { box.innerHTML = "<p class='muted'>No orders yet.</p>"; return; }
+  for (let i = n - 1; i >= 0; i--) {
+    const o = await readEscrow.getOrder(i);
+    const div = document.createElement("div");
+    div.className = "order";
+    div.innerHTML = `<b>#${i} — ${STATE[o.state]}</b> · ${fmt(o.amount)} tUSD8<br>
+      <span class="muted">buyer ${o.buyer}<br>seller ${o.seller}<br>arbiter ${o.arbiter}<br>
+      deadline ${new Date(Number(o.deliveryDeadline) * 1000).toLocaleString()}</span><br>`;
+    const actions = [];
+    if (account) {
+      const me = account.toLowerCase();
+      if (o.state === 0) {
+        if (o.seller.toLowerCase() === me) actions.push(["Mark delivered", "markDelivered"]);
+        if (o.buyer.toLowerCase() === me) actions.push(["Cancel (refund)", "cancelOrder"]);
+        if (o.buyer.toLowerCase() === me && Date.now() / 1000 > Number(o.deliveryDeadline)) actions.push(["Claim refund (deadline passed)", "claimRefund"]);
+      }
+      if (o.state === 1) {
+        if (o.buyer.toLowerCase() === me) actions.push(["Confirm delivery (pay seller)", "confirmDelivery"]);
+        if (o.buyer.toLowerCase() === me && o.arbiter !== ethers.ZeroAddress) actions.push(["Raise dispute", "raiseDispute"]);
+        if (o.seller.toLowerCase() === me && Date.now() / 1000 > Number(o.deliveredAt) + 3 * 86400) actions.push(["Claim release (window over)", "claimRelease"]);
+      }
+      if (o.state === 4 && o.arbiter.toLowerCase() === me) {
+        actions.push(["Resolve: pay seller", "resolveSeller"], ["Resolve: refund buyer", "resolveBuyer"]);
+      }
+    }
+    for (const [label, fn] of actions) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.onclick = async () => {
+        try {
+          b.disabled = true;
+          let tx;
+          if (fn === "resolveSeller") tx = await escrow.resolveDispute(i, true);
+          else if (fn === "resolveBuyer") tx = await escrow.resolveDispute(i, false);
+          else tx = await escrow[fn](i);
+          log(`${label} #${i}: ${tx.hash}`);
+          await tx.wait();
+          log(`confirmed #${i}`);
+          await refreshOrders(); await refreshBalances();
+        } catch (e) { log(`ERROR ${label} #${i}: ${e.shortMessage || e.message}`); b.disabled = false; }
+      };
+      div.appendChild(b); div.appendChild(document.createTextNode(" "));
+    }
+    box.appendChild(div);
+  }
+}
+
+$("connect").onclick = async () => {
+  if (!window.ethereum) { alert("No injected wallet found (MetaMask)."); return; }
+  provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  const net = await provider.getNetwork();
+  if (Number(net.chainId) !== C.chainId) {
+    await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{
+      chainId: "0xabe5", chainName: "QDay Aevum Testnet",
+      rpcUrls: [C.rpc], blockExplorerUrls: [C.explorer], nativeCurrency: { name: "tQDAY", symbol: "tQDAY", decimals: 18 },
+    }]});
+  }
+  signer = await provider.getSigner();
+  account = await signer.getAddress();
+  escrow = new ethers.Contract(C.escrow, ESCROW_ABI, signer);
+  token = new ethers.Contract(C.tUSD8, ERC20_ABI, signer);
+  $("account").textContent = " " + account;
+  log("connected " + account);
+  await refreshBalances(); await refreshOrders();
+};
+
+$("create").onclick = async () => {
+  if (!signer) { alert("Connect your wallet first."); return; }
+  try {
+    const seller = $("seller").value.trim();
+    const arbiter = $("arbiter").value.trim() || ethers.ZeroAddress;
+    const amount = ethers.parseUnits($("amount").value, 6);
+    const deadline = Math.floor(Date.now() / 1000) + Number($("days").value) * 86400;
+    if ((await token.allowance(account, C.escrow)) < amount) {
+      const tx = await token.approve(C.escrow, amount);
+      log("approve: " + tx.hash); await tx.wait();
+    }
+    const tx = await escrow.createOrder(seller, arbiter, amount, deadline);
+    log("createOrder: " + tx.hash);
+    await tx.wait();
+    log("order created");
+    await refreshOrders(); await refreshBalances();
+  } catch (e) { log("ERROR create: " + (e.shortMessage || e.message)); }
+};
+
+$("refresh").onclick = refreshOrders;
+refreshOrders();
+</script>
+</body>
+</html>
